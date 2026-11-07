@@ -1,3 +1,4 @@
+import argparse
 import random
 import uuid
 from datetime import UTC
@@ -350,28 +351,88 @@ def insert_generated_data(
 
     print("\nAll generated records inserted successfully!")
 
+def reset_database() -> None:
+    """Delete existing synthetic records in foreign-key dependency order."""
+
+    delete_statements = [
+        "DELETE FROM transactions",
+        "DELETE FROM cards",
+        "DELETE FROM accounts",
+        "DELETE FROM customers",
+    ]
+
+    with engine.begin() as connection:
+        for statement in delete_statements:
+            connection.execute(text(statement))
+
+    print("Existing synthetic records cleared successfully.")
+
+def is_database_empty() -> bool:
+    """Check whether the banking tables contain any records."""
+
+    tables = ["customers", "accounts", "cards", "transactions"]
+
+    with engine.connect() as connection:
+        for table in tables:
+            result = connection.execute(
+                text(f"SELECT EXISTS (SELECT 1 FROM {table})")
+            ).scalar()
+
+            if result:
+                return False
+
+    return True
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Generate synthetic banking data."
+    )
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="Clear existing records before inserting new synthetic data.",
+    )
+    args = parser.parse_args()
+
+    if args.reset:
+        confirmation = input(
+            "WARNING: This will delete all records in the banking tables. "
+            "Continue? (yes/no): "
+        )
+
+        if confirmation.strip().lower() != "yes":
+            print("Operation cancelled.")
+            raise SystemExit(0)
+
+        reset_database()
+
+    elif not is_database_empty():
+        print(
+            "Database already contains records. "
+            "Use --reset to replace the synthetic dataset."
+        )
+        raise SystemExit(1)
+
     customers = generate_customers(100)
     accounts = generate_accounts(customers)
     cards = generate_cards(customers)
     transactions = generate_transactions(accounts, 500)
+
     validate_generated_data(
         customers,
         accounts,
         cards,
         transactions,
     )
+
     insert_generated_data(
         customers,
         accounts,
         cards,
         transactions,
     )
+
     print(f"Customers generated: {len(customers)}")
     print(f"Accounts generated: {len(accounts)}")
     print(f"Cards generated: {len(cards)}")
     print(f"Transactions generated: {len(transactions)}")
-
-    print("\nSample transaction:")
-    print(transactions[0])
