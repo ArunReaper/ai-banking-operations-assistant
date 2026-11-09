@@ -2,7 +2,7 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class TransactionDetailsResponse(BaseModel):
@@ -45,3 +45,13 @@ class TransactionSummaryResponse(BaseModel):
     transaction_timestamp: datetime
     account_number: str
     account_type: str
+
+class AssistantRequest(BaseModel):
+    message: str = Field(
+        min_length=1,
+        max_length=2000,
+        description="Natural-language transaction investigation question",
+    )
+
+class AssistantResponse(BaseModel):
+    answer: str

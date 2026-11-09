@@ -1,17 +1,24 @@
+import logging
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from backend.api.schemas import (
+    AssistantRequest,
+    AssistantResponse,
     TransactionDetailsResponse,
     TransactionSummaryResponse,
 )
 from backend.database.connection import get_db
+from backend.services.assistant_service import answer_transaction_question
+from backend.services.llm_service import LLMProviderError
 from backend.services.transaction_service import (
     get_recent_transactions,
     get_transaction_details,
 )
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="AI Banking Operations Assistant",
@@ -75,3 +82,33 @@ def get_customer_transactions(
     )
 
     return transactions
+
+@app.post(
+    "/api/v1/assistant/ask",
+    response_model=AssistantResponse,
+)
+def ask_assistant(
+        request: AssistantRequest,
+        db: Session = Depends(get_db),
+):
+    """Answer a natural-language banking transaction question."""
+
+    try:
+        answer = answer_transaction_question(
+            db=db,
+            user_message=request.message,
+        )
+        return AssistantResponse(answer=answer)
+
+    except ValueError as error:
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        ) from error
+
+    except LLMProviderError as error:
+        logger.exception("LLM provider request failed")
+        raise HTTPException(
+            status_code=503,
+            detail="The AI service is temporarily unavailable. Please try again shortly.",
+        ) from error
