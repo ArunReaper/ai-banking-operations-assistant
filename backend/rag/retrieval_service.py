@@ -6,15 +6,16 @@ from backend.rag.vector_store import (
     search_similar_chunks,
 )
 
+DEFAULT_MAX_DISTANCE = 0.65
 
 def retrieve_relevant_documents(
         query: str,
         n_results: int = 3,
+        max_distance: float = DEFAULT_MAX_DISTANCE,
 ) -> list[dict[str, Any]]:
     """
-    Retrieve relevant SOP chunks for a natural-language query.
-
-    Returns the document content, source metadata and vector distance.
+    Retrieve SOP chunks and filter out results above the
+    configured cosine-distance threshold.
     """
 
     if not query or not query.strip():
@@ -23,6 +24,9 @@ def retrieve_relevant_documents(
     if n_results <= 0:
         raise ValueError("Number of results must be positive.")
 
+    if not 0.0 <= max_distance <= 2.0:
+        raise ValueError("Maximum distance must be between 0 and 2.")
+
     collection = get_chroma_collection()
 
     results = search_similar_chunks(
@@ -30,6 +34,12 @@ def retrieve_relevant_documents(
         query=query,
         n_results=n_results,
     )
+
+    relevant_results = [
+        result
+        for result in results
+        if result["distance"] <= max_distance
+    ]
 
     return [
         {
@@ -40,5 +50,5 @@ def retrieve_relevant_documents(
             "version": result["metadata"].get("version"),
             "distance": result["distance"],
         }
-        for result in results
+        for result in relevant_results
     ]
