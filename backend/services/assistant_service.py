@@ -3,6 +3,7 @@ import re
 
 from sqlalchemy.orm import Session
 
+from backend.rag.retrieval_service import retrieve_relevant_documents
 from backend.services.llm_service import generate_response
 from backend.services.transaction_service import get_transaction_details
 
@@ -11,7 +12,7 @@ def answer_transaction_question(
         db: Session,
         user_message: str,
 ) -> str:
-    """Answer a transaction-related question using verified database data."""
+    """Answer a transaction-related question using database data and SOP guidance."""
 
     if not user_message.strip():
         raise ValueError("Please enter a question.")
@@ -58,39 +59,90 @@ def answer_transaction_question(
         "customer_status": transaction["customer_status"],
     }
 
+    # Retrieve relevant operational guidance from ChromaDB.
+    retrieved_documents = retrieve_relevant_documents(
+        query=user_message,
+        n_results=3,
+    )
+
+    if retrieved_documents:
+        operations_guidance = "\n\n".join(
+            (
+                f"Source: {document['title']}\n"
+                f"Document ID: {document['document_id']}\n"
+                f"Version: {document['version']}\n"
+                f"Content:\n{document['content']}"
+            )
+            for document in retrieved_documents
+        )
+    else:
+        operations_guidance = (
+            "No relevant operational guidance was retrieved. "
+            "Do not invent or assume banking policies."
+        )
+
     prompt = f"""
 You are an AI assistant supporting a bank's operations team.
 
 Your task is to help investigate banking transactions.
 
-Use the transaction data below as the source of truth.
+You have been provided with two separate information sources.
 
-TRANSACTION DATA:
+SOURCE 1 - VERIFIED TRANSACTION DATA:
+The following information was retrieved from the banking database.
+Treat it as the source of truth for the recorded transaction facts.
+
 {transaction_context}
+
+SOURCE 2 - RETRIEVED OPERATIONAL GUIDANCE:
+The following content was retrieved from synthetic demonstration
+SOP documents. These documents are educational examples and do not
+represent actual bank policies.
+
+{operations_guidance}
 
 OPERATIONS EMPLOYEE QUESTION:
 {user_message}
 
 INSTRUCTIONS:
+
 1. Explain the transaction status and recorded failure reason.
-2. Distinguish verified database facts from possible explanations.
-3. Do not invent banking policies, transaction events, or system logs.
-4. Do not claim that a payment was refunded, reversed, or resolved
-   unless the supplied data explicitly confirms it.
-5. If the current account balance appears inconsistent with the
+
+2. Distinguish verified database facts from possible explanations
+   and general operational guidance.
+
+3. Use the retrieved SOP content to guide investigation steps.
+   Do not invent banking policies, transaction events, or system logs.
+
+4. Never present synthetic SOP guidance as an actual bank policy.
+
+5. Do not claim that a payment was refunded, reversed, or resolved
+   unless the supplied transaction data explicitly confirms it.
+
+6. If the current account balance appears inconsistent with the
    recorded failure reason, point this out. The current balance
    does not necessarily represent the available balance at the
    time of the transaction.
-6. Suggest practical investigation steps, but do not initiate
+
+7. If the transaction data and retrieved guidance do not establish
+   an answer, clearly state what remains unknown.
+
+8. Cite relevant guidance using its document ID and title when
+   referring to retrieved SOP content.
+
+9. Suggest practical investigation steps, but do not initiate
    any banking operation.
-7. Use clear, professional language suitable for a banking
-   operations employee.
+
+10. Use clear, professional language suitable for a banking
+    operations employee.
 
 Structure your answer using:
+
 - Transaction summary
 - What the data tells us
 - Possible explanation or unresolved questions
 - Recommended investigation steps
+- Reference guidance
 
 Remember: You are providing investigation assistance, not
 making or executing banking decisions.
