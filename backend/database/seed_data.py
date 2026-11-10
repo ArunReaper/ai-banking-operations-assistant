@@ -35,6 +35,49 @@ def test_database_connection() -> None:
         print("Database connection successful:", result.fetchone())
 
 
+
+FAILURE_SCENARIOS = {
+    "INSUFFICIENT_FUNDS": "Insufficient account balance",
+    "INVALID_BENEFICIARY": "Beneficiary details are invalid",
+    "DAILY_LIMIT_EXCEEDED": "Daily transaction limit exceeded",
+    "ACCOUNT_FROZEN": "Account is frozen",
+    "GATEWAY_TIMEOUT": "Payment gateway timed out",
+    "ISSUER_UNAVAILABLE": "Issuer bank is unavailable",
+}
+
+FAILURE_RULES = {
+    "INSUFFICIENT_FUNDS": {
+        "transaction_type": "DEBIT",
+        "channels": ["UPI", "CARD", "NEFT", "IMPS", "RTGS", "ATM", "INTERNAL"],
+        "account_status": "ACTIVE",
+    },
+    "INVALID_BENEFICIARY": {
+        "transaction_type": "DEBIT",
+        "channels": ["UPI", "NEFT", "IMPS", "RTGS"],
+        "account_status": "ACTIVE",
+    },
+    "DAILY_LIMIT_EXCEEDED": {
+        "transaction_type": "DEBIT",
+        "channels": ["UPI", "CARD", "NEFT", "IMPS", "RTGS", "ATM"],
+        "account_status": "ACTIVE",
+    },
+    "ACCOUNT_FROZEN": {
+        "transaction_type": "DEBIT",
+        "channels": ["UPI", "CARD", "NEFT", "IMPS", "RTGS", "ATM", "INTERNAL"],
+        "account_status": "FROZEN",
+    },
+    "GATEWAY_TIMEOUT": {
+        "transaction_type": "DEBIT",
+        "channels": ["UPI", "CARD", "NEFT", "IMPS", "RTGS"],
+        "account_status": "ACTIVE",
+    },
+    "ISSUER_UNAVAILABLE": {
+        "transaction_type": "DEBIT",
+        "channels": ["UPI", "CARD"],
+        "account_status": "ACTIVE",
+    },
+}
+
 # ---------------------------------------------------------
 # 4. CUSTOMER DATA GENERATION
 # ---------------------------------------------------------
@@ -166,21 +209,38 @@ def generate_cards(
 
     return cards
 
+
 def generate_transactions(
         accounts: list[dict],
         count: int = 500,
 ) -> list[dict]:
-    """Generate fictional banking transactions."""
-    transactions = []
+    """Generate fictional banking transactions with consistent failure scenarios."""
 
-    failure_scenarios = {
-        "INSUFFICIENT_FUNDS": "Insufficient account balance",
-        "INVALID_BENEFICIARY": "Beneficiary details are invalid",
-        "DAILY_LIMIT_EXCEEDED": "Daily transaction limit exceeded",
-        "ACCOUNT_FROZEN": "Account is frozen",
-        "GATEWAY_TIMEOUT": "Payment gateway timed out",
-        "ISSUER_UNAVAILABLE": "Issuer bank is unavailable",
-    }
+    if not accounts:
+        raise ValueError("At least one account is required.")
+
+    active_accounts = [
+        account for account in accounts
+        if account["account_status"] == "ACTIVE"
+    ]
+    frozen_accounts = [
+        account for account in accounts
+        if account["account_status"] == "FROZEN"
+    ]
+
+    if not active_accounts:
+        raise ValueError("At least one ACTIVE account is required.")
+
+    available_failure_codes = [
+        code
+        for code, rules in FAILURE_RULES.items()
+        if (
+                rules["account_status"] == "ACTIVE"
+                or frozen_accounts
+        )
+    ]
+
+    transactions = []
 
     for _ in range(count):
         transaction_status = random.choices(
@@ -192,8 +252,26 @@ def generate_transactions(
         failure_reason = None
 
         if transaction_status == "FAILED":
-            failure_code = random.choice(list(failure_scenarios.keys()))
-            failure_reason = failure_scenarios[failure_code]
+            failure_code = random.choice(available_failure_codes)
+            failure_reason = FAILURE_SCENARIOS[failure_code]
+
+            rules = FAILURE_RULES[failure_code]
+
+            transaction_type = rules["transaction_type"]
+            payment_channel = random.choice(rules["channels"])
+
+            if rules["account_status"] == "FROZEN":
+                account = random.choice(frozen_accounts)
+            else:
+                account = random.choice(active_accounts)
+
+        else:
+            # Non-failed transactions use active accounts in this model.
+            account = random.choice(active_accounts)
+            transaction_type = random.choice(["DEBIT", "CREDIT"])
+            payment_channel = random.choice(
+                ["UPI", "CARD", "NEFT", "IMPS", "RTGS", "ATM", "INTERNAL"]
+            )
 
         transaction_timestamp = fake.date_time_between(
             start_date="-90d",
@@ -203,16 +281,14 @@ def generate_transactions(
 
         transaction = {
             "transaction_id": uuid.uuid4(),
-            "account_id": random.choice(accounts)["account_id"],
+            "account_id": account["account_id"],
             "transaction_reference": f"TXN{uuid.uuid4().hex[:16].upper()}",
             "amount": Decimal(
                 str(random.randint(100, 100000))
             ).quantize(Decimal("0.01")),
             "currency": "INR",
-            "transaction_type": random.choice(["DEBIT", "CREDIT"]),
-            "payment_channel": random.choice(
-                ["UPI", "CARD", "NEFT", "IMPS", "RTGS", "ATM", "INTERNAL"]
-            ),
+            "transaction_type": transaction_type,
+            "payment_channel": payment_channel,
             "transaction_status": transaction_status,
             "failure_code": failure_code,
             "failure_reason": failure_reason,
@@ -232,54 +308,117 @@ def validate_generated_data(
         cards: list[dict],
         transactions: list[dict],
 ) -> None:
-    """Validate relationships and constraints in generated data."""
+    """Validate relationships and consistency in generated banking data."""
 
     customer_ids = {customer["customer_id"] for customer in customers}
-    account_ids = {account["account_id"] for account in accounts}
+    accounts_by_id = {
+        account["account_id"]: account for account in accounts
+    }
 
     # Validate account-to-customer relationships.
-    assert all(
-        account["customer_id"] in customer_ids
-        for account in accounts
-    ), "An account references a non-existent customer."
+    if not all(
+            account["customer_id"] in customer_ids
+            for account in accounts
+    ):
+        raise ValueError("An account references a non-existent customer.")
 
     # Validate card-to-customer relationships.
-    assert all(
-        card["customer_id"] in customer_ids
-        for card in cards
-    ), "A card references a non-existent customer."
+    if not all(
+            card["customer_id"] in customer_ids
+            for card in cards
+    ):
+        raise ValueError("A card references a non-existent customer.")
 
     # Validate transaction-to-account relationships.
-    assert all(
-        transaction["account_id"] in account_ids
-        for transaction in transactions
-    ), "A transaction references a non-existent account."
+    if not all(
+            transaction["account_id"] in accounts_by_id
+            for transaction in transactions
+    ):
+        raise ValueError("A transaction references a non-existent account.")
 
     # Validate transaction reference uniqueness.
     transaction_references = [
         transaction["transaction_reference"]
         for transaction in transactions
     ]
-    assert len(transaction_references) == len(set(transaction_references)), (
-        "Duplicate transaction references found."
-    )
 
-    # Validate failure details.
-    assert all(
-        transaction["failure_code"] is not None
-        and transaction["failure_reason"] is not None
-        for transaction in transactions
-        if transaction["transaction_status"] == "FAILED"
-    ), "A failed transaction is missing failure details."
+    if len(transaction_references) != len(set(transaction_references)):
+        raise ValueError("Duplicate transaction references found.")
 
-    assert all(
-        transaction["failure_code"] is None
-        and transaction["failure_reason"] is None
-        for transaction in transactions
-        if transaction["transaction_status"] != "FAILED"
-    ), "A non-failed transaction contains failure details."
+    allowed_statuses = {"SUCCESS", "FAILED", "PENDING", "REVERSED"}
+
+    for transaction in transactions:
+        status = transaction["transaction_status"]
+        failure_code = transaction["failure_code"]
+        failure_reason = transaction["failure_reason"]
+
+        account = accounts_by_id[transaction["account_id"]]
+        account_status = account["account_status"]
+
+        # Validate transaction status.
+        if status not in allowed_statuses:
+            raise ValueError(
+                f"Invalid transaction status: {status}"
+            )
+
+        if status == "FAILED":
+            # Failed transactions must contain failure details.
+            if not failure_code or not failure_reason:
+                raise ValueError(
+                    "A failed transaction is missing failure details."
+                )
+
+            # Failure code must be recognised.
+            if failure_code not in FAILURE_RULES:
+                raise ValueError(
+                    f"Unknown failure code: {failure_code}"
+                )
+
+            rules = FAILURE_RULES[failure_code]
+
+            # Failure reason must match the configured scenario.
+            if failure_reason != FAILURE_SCENARIOS[failure_code]:
+                raise ValueError(
+                    f"Incorrect failure reason for {failure_code}."
+                )
+
+            # Validate transaction type.
+            if transaction["transaction_type"] != rules["transaction_type"]:
+                raise ValueError(
+                    f"{failure_code} has an incompatible transaction type."
+                )
+
+            # Validate payment channel.
+            if transaction["payment_channel"] not in rules["channels"]:
+                raise ValueError(
+                    f"{failure_code} has an incompatible payment channel."
+                )
+
+            # Validate account status.
+            if account_status != rules["account_status"]:
+                raise ValueError(
+                    f"{failure_code} references an account with "
+                    f"status {account_status}; expected "
+                    f"{rules['account_status']}."
+                )
+
+        else:
+            # Non-failed transactions must not contain failure details.
+            if failure_code is not None or failure_reason is not None:
+                raise ValueError(
+                    "A non-failed transaction contains failure details."
+                )
+
+            # Non-failed transactions must use active accounts
+            # in this simplified synthetic dataset.
+            if account_status != "ACTIVE":
+                raise ValueError(
+                    "A non-failed transaction references a "
+                    f"{account_status} account."
+                )
 
     print("\nData validation successful!")
+
 
 
 def insert_generated_data(
@@ -287,6 +426,7 @@ def insert_generated_data(
         accounts: list[dict],
         cards: list[dict],
         transactions: list[dict],
+        reset: bool = False,
 ) -> None:
     """Insert generated records into PostgreSQL."""
 
@@ -342,30 +482,26 @@ def insert_generated_data(
         """),
     }
 
-    # engine.begin() automatically commits on success and rolls back on error.
+    # Keep deletion and insertion in one transaction.
+    # If any operation fails, the entire transaction is rolled back.
     with engine.begin() as connection:
+        if reset:
+            delete_statements = [
+                "DELETE FROM transactions",
+                "DELETE FROM cards",
+                "DELETE FROM accounts",
+                "DELETE FROM customers",
+            ]
+
+            for statement in delete_statements:
+                connection.execute(text(statement))
+
         connection.execute(insert_statements["customers"], customers)
         connection.execute(insert_statements["accounts"], accounts)
         connection.execute(insert_statements["cards"], cards)
         connection.execute(insert_statements["transactions"], transactions)
 
     print("\nAll generated records inserted successfully!")
-
-def reset_database() -> None:
-    """Delete existing synthetic records in foreign-key dependency order."""
-
-    delete_statements = [
-        "DELETE FROM transactions",
-        "DELETE FROM cards",
-        "DELETE FROM accounts",
-        "DELETE FROM customers",
-    ]
-
-    with engine.begin() as connection:
-        for statement in delete_statements:
-            connection.execute(text(statement))
-
-    print("Existing synthetic records cleared successfully.")
 
 def is_database_empty() -> bool:
     """Check whether the banking tables contain any records."""
@@ -383,6 +519,7 @@ def is_database_empty() -> bool:
 
     return True
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Generate synthetic banking data."
@@ -390,21 +527,35 @@ if __name__ == "__main__":
     parser.add_argument(
         "--reset",
         action="store_true",
-        help="Clear existing records before inserting new synthetic data.",
+        help="Replace existing records with a new synthetic dataset.",
     )
     args = parser.parse_args()
 
+    # Step 1: Generate the complete dataset in memory.
+    customers = generate_customers(100)
+    accounts = generate_accounts(customers)
+    cards = generate_cards(customers)
+    transactions = generate_transactions(accounts, 500)
+
+    # Step 2: Validate everything before touching the database.
+    validate_generated_data(
+        customers,
+        accounts,
+        cards,
+        transactions,
+    )
+
+    # Step 3: Check whether replacement is permitted.
     if args.reset:
         confirmation = input(
-            "WARNING: This will delete all records in the banking tables. "
+            "WARNING: This will replace all existing records "
+            "in customers, accounts, cards and transactions. "
             "Continue? (yes/no): "
         )
 
         if confirmation.strip().lower() != "yes":
-            print("Operation cancelled.")
+            print("Operation cancelled. Existing data was not changed.")
             raise SystemExit(0)
-
-        reset_database()
 
     elif not is_database_empty():
         print(
@@ -413,25 +564,16 @@ if __name__ == "__main__":
         )
         raise SystemExit(1)
 
-    customers = generate_customers(100)
-    accounts = generate_accounts(customers)
-    cards = generate_cards(customers)
-    transactions = generate_transactions(accounts, 500)
-
-    validate_generated_data(
-        customers,
-        accounts,
-        cards,
-        transactions,
-    )
-
+    # Step 4: Insert the dataset, optionally replacing existing records.
     insert_generated_data(
         customers,
         accounts,
         cards,
         transactions,
+        reset=args.reset,
     )
 
+    print("\n--- Dataset Generation Summary ---")
     print(f"Customers generated: {len(customers)}")
     print(f"Accounts generated: {len(accounts)}")
     print(f"Cards generated: {len(cards)}")
