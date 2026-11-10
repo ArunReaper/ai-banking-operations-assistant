@@ -1,13 +1,7 @@
-from backend.rag.vector_store import (
-    get_chroma_collection,
-    search_similar_chunks,
-)
-
 from backend.rag.retrieval_service import retrieve_relevant_documents
 
 
 def main() -> None:
-    collection = get_chroma_collection()
 
     queries = [
         # Relevant queries
